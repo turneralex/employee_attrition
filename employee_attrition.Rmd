@@ -1,0 +1,704 @@
+---
+title: "Employee Atrrition"
+subtitle: "Logistic Regression Classification"
+author: "Alexander Turner"
+output: pdf_document
+---
+
+## Required Packages
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(rlang)
+library(GGally)
+library(ggmosaic)
+library(car)
+library(glmulti)
+```
+
+
+## Introduction & Aims
+
+The data being used for this analysis is a fictional dataset created by [__IBM__](https://www.ibm.com/au-en/) data scientists. It has been created to facilitate the development of statistical and machine learning classification models and is one of many published by IBM for this purpose. This particular dataset contains a binary dependent variable and various independent variables covering a range of data types (numeric, nominal and ordinal). 
+
+As the analysis title suggests, this dataset is concerned with employee attrition and consequently the binary dependent variable is whether or not a particular employee left the company. In addition to this there a number of independent variables (listed below) related to each employee which may have an impact on whether they decided to leave or not. 
+
+The aim of this analysis is to develop an understanding of what impacts employee attrition and if it can be accurately predicted. This initial phase will consist of data pre-processing and exploratory data visualisations. The latter phase will involve fitting a logistic regression model and performing appropriate diagnostics. The logistic regression will provide a probability of an employee leaving based on a given set of characteristics. 
+
+\pagebreak
+
+## Data Source & Overview
+
+The data can be found [__here__](https://www.ibm.com/communities/analytics/watson-analytics-blog/hr-employee-attrition/). The data has also been posted on [__Kaggle__](https://www.kaggle.com/pavansubhasht/ibm-hr-analytics-attrition-dataset) as a reviewed dataset. A number of variables in the dataset have been dropped due to ambiguity of what they are actually are / mean. 
+
+__Data source:__
+
+* Title: SAMPLE DATA Employee Attrition and Performance
+* URL: https://www.ibm.com/communities/analytics/watson-analytics-blog/hr-employee-attrition/ 
+
+__Variables:__ 
+
+Dependent variable:
+
+* __Attrition:__ whether an employee left the company or not - nominal binary 
+
+Independent variables:
+
+* __Age:__ employee age - numeric
+* __Business Travel:__ amount of travel employee does as part of job - ordinal 
+* __Education Level:__ employee education level - ordinal 
+* __Gender:__ employee gender - nominal binary 
+* __Job Role:__ employee job role - nominal
+* __Job Level:__ seniority of employee - numeric
+* __Job Satisfaction:__ employee job satisfaction - ordinal
+* __Overtime:__ whether or not the employee works overtime - nominal binary
+* __Performance Rating:__ employee performance rating - ordinal 
+* __Work-Life Balance:__ employee work-life balance - ordinal 
+* __Years in Current Role:__ employee years in current role - numeric
+* __Years Since Last Promotion:__ employee years since last promotion - numeric
+
+Information regarding factor levels and level frequencies are shown in the data pre-processing to follow.
+
+\pagebreak
+
+## Data Pre-Processing
+
+```{r message=FALSE, warning=FALSE}
+# import data
+attrition <- read_csv("./employee_attrition.csv",
+                      col_types = c(Age = "i",
+                                    JobLevel = "i", 
+                                    YearsInCurrentRole = "i",
+                                    YearsSinceLastPromotion = "i"))
+
+# data
+attrition %>% glimpse()
+
+# convert column names to lower case
+names(attrition) <- names(attrition) %>% 
+  tolower()
+
+# check for missing values
+attrition %>% map_dbl(~ is.na(.) %>% sum())
+
+# convert character columns to factors
+attrition <- attrition %>% 
+  mutate_if(is.character, factor)
+
+# re-label business travel factor & order
+attrition$businesstravel <- attrition$businesstravel %>% 
+  str_replace("[-_]", " ") %>% 
+  factor(levels = c("Non Travel", "Travel Rarely", "Travel Frequently"),
+         ordered = T) 
+```
+
+\pagebreak
+
+```{r}
+# convert appropriate integer columns to factors
+attrition$education <- attrition$education %>% 
+  factor(levels = 1:5,
+         labels = c("Below College", "College", "Bachelor", "Master", "Doctor"),
+         ordered = T)
+
+attrition$jobsatisfaction <- attrition$jobsatisfaction %>% 
+  factor(levels = 1:4, 
+         labels = c("Low", "Medium", "High", "Very High"),
+         ordered = T)
+
+attrition$performancerating <- attrition$performancerating %>% 
+  factor(levels = 1:4,
+         labels = c("Low", "Good", "Excellent", "Outstanding"),
+         ordered = T) %>% 
+  fct_drop() # drop "low" & "good" levels that are empty
+
+attrition$worklifebalance <- attrition$worklifebalance %>% 
+  factor(levels = 1:4, 
+         labels = c("Bad", "Good", "Better", "Best"),
+         ordered = T)
+```
+
+\pagebreak
+
+## Data Summaries
+
+```{r}
+# numeric variables summary
+attrition %>% 
+  select_if(is.integer) %>% 
+  map(summary)
+
+# factor variables summary (including dependent variable)
+attrition %>% 
+  select_if(is.factor) %>% 
+  map(table) %>% 
+  map(~ as_tibble(., .name_repair = make.names))
+```
+
+## Data Visualisations - Functions & Data
+
+The following code is to define some data and user-defined functions for plotting.
+
+```{r}
+means <- attrition %>%
+  group_by(attrition) %>%
+  summarise_if(is.integer, mean) %>% 
+  gather(variable, mean, -1)
+
+hist_fun <- function(df, variable) {
+  quo_variable <- enquo(variable)
+  
+  df %>% 
+    ggplot(aes(!!quo_variable, fill = attrition)) +
+    geom_histogram(binwidth = 1) +
+    facet_grid(attrition ~ ., scales = "free_y") +
+    geom_vline(data = filter(means, variable == quo_text(quo_variable)),
+               aes(xintercept = mean, linetype = ""),
+               size = 1) +
+    scale_fill_brewer(palette = "Set2") +
+    scale_linetype_manual("Mean", values = "solid") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    guides(fill = F) +
+    labs(y = "Count") 
+}
+
+mosaic_fun <- function(df, variable) {
+  quo_variable <- enquo(variable)
+  sym_variable <- ensym(variable)
+  
+  df %>% 
+    group_by(attrition, !!quo_variable) %>% 
+    summarise(count = n()) %>%   
+    ggplot() +
+    geom_mosaic(aes(x = product(!!sym_variable), weight = count, fill = attrition)) +
+    scale_fill_brewer(palette = "Set2") +
+    theme(plot.title = element_text(hjust = 0.5)) +
+    labs(y = "Proportion",
+         fill = "Attrition")
+}
+
+xtab_fun <- function(df, variable) {
+  quo_variable <- enquo(variable)
+  
+  df %>% 
+    select(!!quo_variable, attrition) %>% 
+    table()
+}
+```
+
+\pagebreak
+
+## Data Visualisations - Plots
+
+```{r}
+attrition %>% 
+  select_if(is.numeric) %>% 
+  ggpairs() +
+  labs(title = "Numeric Variables Matrix Plot",
+       subtitle = "Corr: correlation coefficicent") +
+  theme_bw() +
+  theme(plot.title = element_text(hjust = 0.5),
+        plot.subtitle = element_text(hjust = 0.5))
+```
+
+
+There are no particularly strong correlations among the numeric independent variables which is ideal in a regression model as multicollinearity among predictors can be problematic. Years in current role and years since last promotion have a moderately strong postie correlation and so does age and job level. The job level variable also has a slightly weaker postie correlation with both years in current role and years since last promotion. All of these relationships intuitively make sense.
+
+\pagebreak
+
+```{r}
+hist_fun(attrition, age) +
+  xlab("Age") +
+  ggtitle("Attrition by Age Histogram")
+```
+
+In general, it is younger employees departing the company with an average age of 33.6 for employees that left and 37.6 for those that have stayed. The histogram shows a relatively large number of employees aged 25 and below have departed.
+
+\pagebreak
+
+```{r}
+attrition %>% 
+  ggplot(aes(attrition, joblevel, colour = attrition)) +
+  geom_jitter(size = 1.5, alpha = 0.8) +
+  stat_summary(fun.y = "mean", 
+               aes(shape = "Mean"), 
+               geom = "point", 
+               colour = "black", 
+               size = 4) +
+  scale_colour_brewer(palette = "Set2") +
+  scale_shape_manual("", values = 18) +
+  scale_y_continuous(breaks = seq(0, 5, by = 1)) +
+  labs(title = "Attrition by Job Level Jitter Plot",
+       x = "Attrition",
+       y = "Job Level") +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  guides(colour = F)
+```
+
+A jitter plot has been used for this numeric variable as there are only five values job level can take and a histogram would be ill-suited. For the job level variable it is evident that lower level employees are tending to leave at higher rates than their higher-level colleagues. For the employees that left the average job level is 1.6, compared to 2.2 for those that chose to stay. This ties in with the previous insight regarding age as the two variables are positively correlated. The jitter plot shows very few employees at job level 4 and above have left. 
+
+\pagebreak
+
+```{r}
+hist_fun(attrition, yearsincurrentrole) +
+  xlab("Years in Current Role") +
+  ggtitle("Attrition by Years in Current Role Histogram") +
+  scale_x_continuous(breaks = seq(min(attrition$yearsincurrentrole), 
+                                  max(attrition$yearsincurrentrole), 
+                                  by = 1))
+```
+
+Employees that have left tend to have been in their roles for shorter times. Of those that left the average time in their current role was 2.9 years but for employees that haven't left it is 4.5 years. It seems that lower-level employees that have been in their roles for less time tend to be the ones opting to leave.
+
+\pagebreak
+
+```{r}
+hist_fun(attrition, yearssincelastpromotion) +
+  xlab("Years Since Last Promotion") +
+  ggtitle("Attrition by Years Since Last Promotion Histogram") +
+  scale_x_continuous(breaks = seq(min(attrition$yearssincelastpromotion), 
+                                  max(attrition$yearssincelastpromotion), 
+                                  by = 1))
+```
+
+In terms of years since last promotion, there is little difference in the average (1.9 years for employees that left vs. 2.2 years for those that didn't) and the histogram shows the distribution for the groups is very much the same as well. One might have expected the average to be higher for those that left as not receiving a promotion would typically be seen as a reason for an employee potentially becoming disgruntled and leaving. 
+
+\pagebreak
+
+```{r}
+mosaic_fun(attrition, businesstravel) +
+  xlab("Business Travel") +
+  ggtitle("Attrition by Business Travel Mosaic Plot")
+
+xtab_fun(attrition, businesstravel)
+```
+
+Most employees travel rarely, with some travelling frequently and relatively few not at all. It is evident that increased travel appears to be associated with being more likely to leave the company. Approximately 25% of those who travel frequently departed compared to less than 10% for those that weren't required to travel. 
+
+\pagebreak
+
+```{r}
+mosaic_fun(attrition, education) +
+  xlab("Education Level") +
+  ggtitle("Attrition by Education Level Mosaic Plot")
+
+xtab_fun(attrition, education)
+```
+
+Level of education presents fairly even results with the only exception being the low rate of departure for those with a doctorate level degree, but there are very small number of employees at this level. Most employees have a bachelor or master and the number of employees without at least some college education is quite small.
+
+\pagebreak
+
+```{r}
+mosaic_fun(attrition, gender) +
+  xlab("Gender") +
+  ggtitle("Attrition by Gender Mosaic Plot")
+
+xtab_fun(attrition, gender)
+```
+
+The company is well over 50% of male and this group is slightly more likely to leave compared to female employees.
+
+\pagebreak
+
+```{r}
+mosaic_fun(attrition, jobrole) +
+  xlab("Job Role") +
+  ggtitle("Attrition by Job Role Mosaic Plot") +
+  theme(axis.text.x = element_text(angle = 50, vjust = 0.5))
+
+xtab_fun(attrition, jobrole)
+```
+
+Across the nine job roles there is a lot of variation in terms of proportion of employees that left. Sales representatives are the most likely to have departed, with ~40% departing. The job roles with relatively few employees (with the exception of human resources) are the ones where more employees stay.  
+
+\pagebreak
+
+```{r}
+mosaic_fun(attrition, jobsatisfaction) +
+  xlab("Job Satisfaction") +
+  ggtitle("Attrition by Job Satisfaction Mosaic Plot") 
+
+xtab_fun(attrition, jobsatisfaction)
+```
+
+The job satisfaction variable provides an expected insight by revealing employees with low job satisfaction are most likely to leave and those with very high job satisfaction are most likely to stay. Most employees job satisfaction is either High or Very High. 
+
+\pagebreak
+
+```{r}
+mosaic_fun(attrition, overtime) +
+  xlab("Overtime") +
+  ggtitle("Attrition by Overtime Mosaic Plot") 
+
+xtab_fun(attrition, overtime)
+```
+
+Another perhaps expected result with employees doing overtime work being more likely to leave than those who don't. Most employees are not required (or maybe choose not) to do overtime. 
+
+\pagebreak
+
+```{r}
+mosaic_fun(attrition, performancerating) +
+  xlab("Performance Rating") +
+  ggtitle("Attrition by Performance Rating Mosaic Plot") 
+
+xtab_fun(attrition, performancerating)
+```
+
+Despite there being four possible performance ratings, all 1,470 employees were rated either Excellent or Outstanding. The overwhelming majority were in the Excellent group and attrition levels were almost identical across groups. 
+
+\pagebreak
+
+```{r}
+mosaic_fun(attrition, worklifebalance) +
+  xlab("Work-Life Balance") +
+  ggtitle("Attrition by Work-Life Balance Mosaic Plot") 
+
+xtab_fun(attrition, worklifebalance)
+```
+
+Finally, work-life balance shows most employees are described as having Good and Better balance between their work and personal lives. Unsurprisingly, those with Bad work-life balance had the highest proportion of leavers. Across all the others groups, levels were fairly consistent with Best even having a higher attrition rate than Better.
+
+\pagebreak
+
+## Conclusion - Exploratory Analysis
+
+In conclusion, it appears a number of the independent variables do have an impact on employee on departures. It will be up to the logistic regression model to do the heavy lifting and determine which effects are statistically significant. The model can also help determine which variables impact attrition rates given the presence of other explanatory variables. Interaction effects and higher order terms may also be explored. The model stage will also involve determining how to treat all of the independent variables and whether some should be dropped altogether. 
+
+\pagebreak
+
+## Logistic Regression - Methodology
+
+Logistic regression is a statistical model used to make predictions when there is a binary dependent variable. It does so by assigning a probability (denoted by $\pi$) to each of the 2 mutually exclusive outcomes. Like other regression models, logistic regression can handle nominal and numerical independent variables and makes no assumptions about the distributions of these variables. 
+
+In the case of a dichotomous dependent variable like this the regression the link function is equal to the natural log of the [__odds__](https://en.wikipedia.org/wiki/Odds), rather than the actual value of the predicted variable itself (the probability of an employee leaving). This is known as the [__logit transformation__](https://en.wikipedia.org/wiki/Logit) and the [__logistic function__](https://en.wikipedia.org/wiki/Logistic_function) is inverse of the logit. The logistic function is used because its domain is $(-\infty, \infty)$ and its range is naturally bound between 0 and 1, making it ideal for generating probabilities based on a wide range of possible input values. Binary logistic regression like this is a classification problem and the model prediction is whichever binary outcome it assigns the higher probability. For example, if Employee 2 has a probability of 0.54 then the model has predicted they will depart. 
+
+Below is the mathematics behind what was previously explained.
+
+__Logit function:__
+
+$$
+\begin{aligned}
+logit(\pi) = log(\frac{\pi} {1 - \pi}) = \beta_0 + \beta_1x_1 + ... + \beta_px_p
+\end{aligned}
+$$
+
+__Logistic function:__
+
+$$
+\begin{aligned}
+logistic(x) = \frac {e^x} {1 + e^x}
+\end{aligned}
+$$
+
+Where:
+
+$$
+\begin{aligned}
+x = \beta_0 + \beta_1x_1 + ... + \beta_px_p
+\end{aligned}
+$$
+
+\pagebreak
+
+## Treatment of Independent Variables
+
+All the numeric and nominal independent variables will be fed into the model as they are. For the nominal variables, coding them as factors earlier means R knows they are categorical when creating the model. This will not be the case for the ordinal variables, though. The way they will be input into the model is listed below. Where it seems like it can be more safely assumed that the ordinal variable levels will have a linear effect on the dependent variable, they are coded as numeric. This would imply equal spacing between the variable levels and mean level 4 would be seen as twice level 2, for example. Obviously, this is not entirely true for ordinal variables as they are not ratio data. When it seems like this assumption cannot be met, they are coded as nominal and all information pertaining to their order is lost. Both approaches are not perfect, but this is statistics after all so nothing is ever 100% certain. 
+
+Variable:
+
+* __Business Travel:__ will be converted to nominal as the difference between Travel Rarely and Travel Frequently is not clear. Non Travel will become the base level in the model
+* __Education Level:__ will be converted to nominal as it is hard to say how much of difference there is for Master (level 4) vs Bachelor (level 3) and Bachelor vs College (level 2). Below College will become the base level in the model
+* __Job Satisfaction:__ will be converted to numeric as this variable appears to have equal spacing between factor levels
+* __Performance Rating:__ will be converted to numeric numeric as this variable appears to have equal spacing between factor levels
+* __Work-Life Balance:__ will be converted to numeric numeric as this variable appears to have equal spacing between factor levels
+
+## Data Transformation
+
+The code below transforms the variables as outlined above. 
+
+```{r}
+# transform variables to nominal
+attrition_2 <- attrition %>% 
+  mutate(businesstravel = businesstravel %>% factor(ordered = F),
+         education = education %>% factor(ordered = F))
+
+# transform variables to numeric
+attrition_2 <- attrition_2 %>%
+  mutate(jobsatisfaction = jobsatisfaction %>% as.numeric(),
+         performancerating = performancerating %>% as.numeric(),
+         worklifebalance = worklifebalance %>% as.numeric())
+```
+
+\pagebreak
+
+## Logistic Regression Model
+
+It was touched on in the methodology section, but to be explicitly clear the base level in this logistic regression model will be No for the dependent attrition variable. This means that any output values above 0.5 will be predicting an employee to leave. 
+
+```{r}
+# logistic regression model
+model_1 <- glm(
+  attrition ~ ., # include all variables
+  family = binomial(link = logit),
+  data = attrition_2
+) 
+
+# model summary
+model_1 %>% summary()
+```
+
+The model summary shows the estimated regression coefficients in the Estimate column, along with the standard errors (Std. Error), z values (z value) and corresponding p-values (Pr(>|z|)).
+
+\pagebreak
+
+## Variable Significance Test
+
+The p values from the `summary` function can be used to test independent variable significance, but in general [__likelihood ratio tests__](https://en.wikipedia.org/wiki/Likelihood-ratio_test) are preferred. The `Anova` function from the `car` package does this. 
+
+```{r}
+# likelihood ratio test
+model_1 %>% Anova()
+```
+
+The likelihood ratio tests shows some variables are not significant, given all other variables are in the model. 
+
+\pagebreak
+
+## Deviance & AIC
+
+In the output from the `summary` call are three key elements in assessing the model: null deviance, residual deviance and [__AIC__](https://en.wikipedia.org/wiki/Akaike_information_criterion). 
+
+Deviance refers to how much one model deviates from another as measured by $-2log(\Lambda)$ where $\Lambda$ is the likelihood under $H_0$ divided by the likelihood under $H_A$ (the likelihood ratio). 
+
+* __Null deviance:__ denotes how much the 'silly' model deviates with one parameter deviates from using a saturated model 
+* __Residual deviance:__ denotes how much the model of interest deviates from the saturated model
+
+Ideally, residual deviance is as low as possible but, just like $R^2$ in linear regression, this number will only go down if we keep adding more and more parameters. This is where AIC comes in as it helps with model comparison and, ultimately, model selection. AIC is $-2log(\Lambda) + 2r$ where $r$ is the total number of model parameters. It isn't helpful by itself but is when comparing models, with lower AIC indicating a better model. AIC effectively punishes models with a large number of parameters that have little impact individually (but may collectively result in a low residual deviance). 
+
+As not all variables are significant in the original model, an algorithm will be used to to sort through the $2^{12}$ (which is manageable) total number of main effect independent variable combinations possible and find the best in terms of minimising the AIC value. The `glmulti` function from the `glmulti` package will be used to do this.
+
+\pagebreak
+
+## Model Selection Algorithm
+
+The below code implements the exhaustive search of main effects aimed at minimising the AIC.
+
+```{r include=FALSE}
+model_test <- glmulti(
+  attrition ~ ., 
+  family = binomial(link = logit), 
+  data = attrition_2, 
+  fitfunction = "glm",
+  level = 1, # test only main effects
+  method = "h", # perform an exhastive search
+  crit = "aic" # minimise AIC
+)
+```
+
+```{r eval=FALSE}
+model_test <- glmulti(
+  attrition ~ ., # test all variables
+  family = binomial(link = logit), 
+  data = attrition_2, 
+  fitfunction = "glm",
+  level = 1, # test only main effects
+  method = "h", # perform an exhastive search
+  crit = "aic" # minimise AIC
+)
+```
+
+Best model (in terms of main effects) found:
+
+```{r}
+model_test %>% 
+  weightable() %>% 
+  slice(1) %>% 
+  select(model) %>% 
+  pull() %>% 
+  str_replace_all(" ", "") %>% 
+  str_split("[+]") %>% 
+  unlist() %>% 
+  .[-1]
+```
+
+AIC value:
+
+```{r}
+model_test %>% 
+  weightable() %>% 
+  slice(1) %>% 
+  select(aic)
+```
+
+The AIC is lower than the initial model that simply contained all main effects.
+
+\pagebreak
+
+## Model - Version 2
+
+```{r}
+# optimal model (for AIC reduction)
+model_2 <- glm(
+  attrition ~ age + 
+    businesstravel + 
+    gender + 
+    jobrole + 
+    overtime + 
+    jobsatisfaction + 
+    worklifebalance +
+    yearsincurrentrole +
+    yearssincelastpromotion, 
+  family = binomial(link = logit),
+  data = attrition_2
+) 
+
+# model summary
+model_2 %>% summary() 
+```
+
+\pagebreak
+
+## Variable Significance Test - Version 2
+
+```{r}
+# likelihood ratio test
+model_2 %>% Anova()
+```
+
+All variables are significant except Gender, which just misses the 0.05 cut.
+
+\pagebreak
+
+## Goodness of Fit
+
+After using `glmulti` to provide the optimal model (in terms of lowest AIC) a goodness of fit test can be used to evaluate the model. A simple but effective measure for this is calculating deviance to degrees of freedom ratio. Ideally this value will not be greater than 1.
+
+```{r}
+# deviance to degrees of freedom ratio
+(model_2$deviance / model_2$df.residual) %>% round(2)
+```
+
+The value is well below 1, indicating a good model.
+
+## Estimated Model
+
+As is the case with linear regression, all coefficients can be interpreted as the effect of a 1 unit change in the given variable holding all other variables constant. The base levels for all nominal variables become part of the intercept parameter.
+
+$logit(\hat {\pi}) = -0.8912-0.0368age+0.6682businesstravel.rarely+1.3973businesstravel.frequently\\+0.2749gender.male+1.4944jobrole.HR+1.5003jobrole.labtech+0.0056jobrole.manager\\+0.1954jobrole.manufacturingdirector-0.8725jobrole.researchdirector+0.7363jobrole.researchscientist\\+1.2767jobrole.salesexec+2.0637jobrole.salesrep+1.6023overtime.yes-0.3423jobsatisfaction\\-0.2928worklifebalance-0.1699yearsincurrentrole+0.1356yearssincelastpromotion$
+
+## Variable Effects
+
+The regression coefficient estimates show how each of the variables impact attrition probability:
+
+* __Age:__ the older an employee is the more probable it is that they leave
+* __Business Travel:__ 
+  + Travel Rarely: increases probability of leaving relative to base level Non Travel
+  + Travel Frequently: increases probability of leaving relative to base level Non Travel
+* __Gender:__ Male increases the probability relative to base level Female
+* __Job Role:__ 
+  + Human Resources: increases probability of leaving relative to base level Healthcare Representative
+  + Laboratory Technician: increases probability of leaving relative to base level Healthcare Representative
+  + Manager: decreases probability of leaving relative to base level Healthcare Representative
+  + Manufacturing Director: increases probability of leaving relative to base level Healthcare Representative
+  + Research Director: decreases probability of leaving relative to base level Healthcare Representative
+  + Research Scientist: increases probability of leaving relative to base level Healthcare Representative
+  + Sales Executive: increases probability of leaving relative to base level Healthcare Representative
+* __Job Satisfaction:__ the higher an employee's job satisfaction is (the greater the value of the numeric variable) the less probable it is that they leave
+* __Overtime:__ Yes increases probability of leaving relative to base level No
+* __Work-Life Balance:__ the better an employee's work-life balance is (the greater the value of the numeric variable) the less probable it is that they leave
+* __Years in Current Role:__ the longer an employee has been in their current role the the less probable it is that they leave
+* __Years Since Last Promotion:__ the longer since an employee's last promotion the more probable it is that they leave
+
+\pagebreak
+
+## Odds Ratios
+
+One of the main benefits of using logistic regression when working with probabilities is the ability to use [__odds ratios__](https://en.wikipedia.org/wiki/Odds_ratio) to interpret the effect of changing individual variables. 
+
+This comes from the fact that:
+
+$$
+\begin{aligned}
+log(\frac{\pi} {1 - \pi}) = \beta_0 + \beta_1x_1 + ... + \beta_px_p
+\end{aligned}
+$$
+
+Becomes:
+
+$$
+\begin{aligned}
+\frac{\pi} {1 - \pi} = e^{\beta_0 + \beta_1x_1 + ... + \beta_px_p}
+\end{aligned}
+$$
+
+Which, of course, is the odds:
+
+$$
+\begin{aligned}
+Odds = e^{\beta_0 + \beta_1x_1 + ... + \beta_px_p}
+\end{aligned}
+$$
+
+So, if the $x$ corresponding to $\beta_1$ increases by 1 unit then:
+
+$$
+\begin{aligned}
+Odds Ratio = \frac{e^{\beta_0 + \beta_1(x_1 + 1)}} {e^{\beta_0 + \beta_1x_1}} = \frac{e^{\beta_0 + \beta_1x_1 + \beta_1}} {e^{\beta_0 + \beta_1x_1}} = e^{\beta_1}
+\end{aligned}
+$$
+
+For every 1 unit (the unit change can be of any magnitude and for any value of $x$) change in $x$ the odds are $e^{\beta_1}$ as large. This is true for numeric and nominal variables, except for the nominal variables with more than 1 level. In that case, the above is true when comparing any level to the base (which becomes part of the intercept parameter typically) but it is different when comparing other levels, for example $\beta_2$ to $\beta_1$. 
+
+This is shown below:
+
+$$
+\begin{aligned}
+Odds Ratio = \frac{e^{\beta_0 + \beta_2}} {e^{\beta_0 + \beta_1}} = e^{\beta_2 - \beta_1}
+\end{aligned}
+$$
+
+It is worth noting things are not so simple when considering interactions, quadratric terms etc. 
+
+To show how this works in practice some variables will be used for demonstration. Age will be used as the numeric variable and Job Role as the nominal variable. 
+
+For every 10 unit increase in Age (employee gets 10 years older) the odds are:
+
+```{r}
+# odds ratio
+exp(model_2$coefficients[2] * 10) %>% round(2) %>% unname()
+```
+
+times as large. In other words, the odds are lower. It could also be said that the odds are:
+
+```{r}
+# invert odds ratio
+(1 / exp(model_2$coefficients[2] * 10)) %>% round(2) %>% unname()
+```
+
+as large for an employee staying for every 10 years younger they are. Odds ratios can always be inverted when considering the decrease in a variable like this. 
+
+The odds of a Laboratory Technician leaving compared to a Healthcare Representative are: 
+
+```{r}
+# odds ratio
+exp(model_2$coefficients[7]) %>% round(2) %>% unname()
+```
+
+times as large. In other words, the odds are higher that Laboratory Technicians leave compared to Healthcare Representatives. 
+
+The odds of a Laboratory Technician leaving compared to a Research Scientist are: 
+
+```{r}
+# odds ratio
+exp(model_2$coefficients[7] - model_2$coefficients[11]) %>% round(2) %>% unname()
+```
+
+times as large. In other words, the odds are higher that Laboratory Technicians leave compared to Research Scientists. 
+
+\pagebreak
+
+## Conclusion - Model
+
+In conclusion, it has been demonstrated that with the independent variables in this particular dataset a useful logistic regression model can be obtained for predicting attrition. With a relatively small number of variables, an exhaustive search of the main features was possible resulting in a model that had the lowest AIC possible. Of course, this analysis did not consider interactions between variables or higher order terms. Adding these in could potentially reduce the AIC and result in better overall prediction values but there is also a risk of overfitting. Finally, the goodness of fit test result showed a value well below 1, indicating a good model. 
